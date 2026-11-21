@@ -2,7 +2,7 @@
 import asyncio
 import logging
 
-from backend.app.database import renew_collaboration_lease
+from app.database import renew_collaboration_lease
 
 
 logger = logging.getLogger(__name__)
