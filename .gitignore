@@ -32,3 +32,34 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Deployment safety
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Python virtual environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Project backup files
+*.bak
+*.bak.*
+*_backup.py
+*_before_*.py
+
+# Build and local artifacts
+.next/
+node_modules/
+*.log
+.DS_Store
