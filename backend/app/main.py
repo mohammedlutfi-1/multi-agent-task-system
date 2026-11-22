@@ -1073,7 +1073,7 @@ async def collaborate_ai_models(
             detail="You must accept potential provider charges before using personal API keys.",
         )
 
-        personal_keys = None
+    personal_keys = None
 
     if request.use_personal_keys:
         personal_keys = {}
