@@ -2335,13 +2335,21 @@ async def generate_student_mock_test(
                 detail="No AI provider is configured.",
             )
 
-    quota = await reserve_student_ai_calls(user_id, 1)
+    quota = await reserve_student_ai_request(
+        user_id=user_id,
+        request_id=str(uuid4()),
+        requested_calls=1,
+    )
 
     if not quota.get("allowed"):
         raise HTTPException(
             status_code=429,
             detail="Daily student AI quota reached.",
         )
+
+    reservation_id = quota["reservation_id"]
+
+    saved_successfully = False
 
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -2370,6 +2378,13 @@ async def generate_student_mock_test(
             questions=generated["questions"],
         )
 
+        saved_successfully = True
+
+        settlement = await settle_student_ai_request(
+            reservation_id=reservation_id,
+            calls_charged=1,
+        )
+
         return {
             "test_id": saved["id"],
             "exam_id": str(request.exam_id),
@@ -2377,18 +2392,39 @@ async def generate_student_mock_test(
             "questions": public_questions(generated["questions"]),
             "provider": generated.get("provider"),
             "model": generated.get("model"),
-            "quota": quota,
+            "quota": {**quota, **settlement},
         }
 
-    except MockTestError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except (httpx.HTTPError, RuntimeError) as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Mock-test generation is temporarily unavailable.",
-        ) from exc
+    except BaseException as exc:
+        # Refund only when generation or saving failed.
+        # Do not refund after a successful save.
+        if not saved_successfully:
+            try:
+                await settle_student_ai_request(
+                    reservation_id=reservation_id,
+                    calls_charged=0,
+                )
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "Mock Test quota refund failed"
+                )
 
+        if isinstance(exc, MockTestError):
+            raise HTTPException(
+                status_code=422,
+                detail=str(exc),
+            ) from exc
 
+        if isinstance(exc, (httpx.HTTPError, RuntimeError)):
+            raise HTTPException(
+                status_code=503,
+                detail="Mock-test generation is temporarily unavailable.",
+            ) from exc
+
+        raise
+
+    # Previous exception handlers are replaced above.
 @app.get("/student/ai/mock-tests/{test_id}")
 async def retrieve_student_mock_test(
     test_id: UUID,
