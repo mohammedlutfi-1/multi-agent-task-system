@@ -1144,7 +1144,7 @@ async def collaborate_ai_models(
             return await call_ai_with_fallback(
                 client=client,
                 messages=messages,
-                max_tokens=800,
+                max_tokens=2000,
                 provider_order=provider_order,
                 personal_keys=personal_keys,
             )
@@ -1348,7 +1348,7 @@ async def resume_saved_collaboration(saved_task: dict) -> dict:
             return await call_ai_with_fallback(
                 client=client,
                 messages=messages,
-                max_tokens=800,
+                max_tokens=2000,
                 provider_order=provider_order,
                 personal_keys=None,
             )
