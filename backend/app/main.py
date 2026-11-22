@@ -146,6 +146,7 @@ class AIRequest(BaseModel):
     task: str = Field(min_length=1, max_length=5000)
     use_personal_keys: bool = False
     accept_provider_charges: bool = False
+    selected_models: list[str] | None = None
 
 
 class StudentAIRequest(BaseModel):
@@ -862,6 +863,7 @@ async def call_ai_with_fallback(
         "groq": (GROQ_MODEL, "GROQ_API_KEY"),
         "gemini": (GEMINI_MODEL, "GEMINI_API_KEY"),
         "openrouter": (MODEL_2, "OPENROUTER_API_KEY"),
+        "ollama": ("qwen2.5:1.5b", ""),
     }
 
     if (
@@ -884,7 +886,11 @@ async def call_ai_with_fallback(
     attempted = []
 
     for provider, model, env_name in providers:
-        if personal_keys is not None:
+        if provider == "ollama":
+            api_key = (
+                "local" if os.getenv("ENABLE_LOCAL_OLLAMA", "false").lower() == "true" else None
+            )
+        elif personal_keys is not None:
             api_key = personal_keys.get(provider)
         else:
             api_key = os.getenv(env_name)
@@ -897,7 +903,22 @@ async def call_ai_with_fallback(
             continue
 
         try:
-            if provider == "groq":
+            if provider == "ollama":
+                response = await client.post(
+                    "http://127.0.0.1:11434/api/chat",
+                    json={
+                        "model": model,
+                        "messages": messages,
+                        "stream": False,
+                        "options": {"num_predict": min(max_tokens, 800)},
+                    },
+                    timeout=120,
+                )
+                response.raise_for_status()
+                answer = response.json()["message"]["content"]
+                if not answer.strip():
+                    raise ValueError("Ollama returned an empty answer")
+            elif provider == "groq":
                 answer = await call_groq_model(
                     client, messages, api_key,
                     max_tokens=max_tokens,
@@ -1109,6 +1130,57 @@ async def collaborate_ai_models(
         ]
     else:
         selected_models = ["gemini", "groq"]
+
+    if request.selected_models is not None:
+        requested = request.selected_models
+
+        if (
+            not 2 <= len(requested) <= 4
+            or len(set(requested)) != len(requested)
+            or any(
+                provider not in ("gemini", "groq", "openrouter", "ollama")
+                for provider in requested
+            )
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Select 2-4 distinct approved AI providers.",
+            )
+
+        if "ollama" in requested:
+            if os.getenv("ENABLE_LOCAL_OLLAMA", "false").lower() != "true":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Local Ollama is disabled.",
+                )
+
+        if request.use_personal_keys:
+            missing = [
+                provider for provider in requested
+                if provider != "ollama" and provider not in personal_keys
+            ]
+            if missing:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Missing personal API keys for selected providers.",
+                )
+
+        if not request.use_personal_keys:
+            allowed_platform_models = {"gemini", "groq"}
+
+            if os.getenv("ENABLE_LOCAL_OLLAMA", "false").lower() == "true":
+                allowed_platform_models.add("ollama")
+
+            if any(
+                provider not in allowed_platform_models
+                for provider in requested
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Selected provider is unavailable in platform mode.",
+                )
+
+        selected_models = requested
 
     max_rounds = 2
 
@@ -2514,3 +2586,64 @@ app.include_router(
     )
 )
 # === End Step 635B.7 ===
+
+
+# LOCAL OLLAMA INTEGRATION - OPTIONAL
+@app.post("/ai/ollama/test")
+async def test_local_ollama(
+    request: AIRequest,
+    user: dict = Depends(verify_user),
+):
+    if os.getenv("ENABLE_LOCAL_OLLAMA", "false").lower() != "true":
+        raise HTTPException(
+            status_code=503,
+            detail="Local Ollama is disabled.",
+        )
+
+    prompt = request.task.strip()
+
+    if not prompt:
+        raise HTTPException(
+            status_code=400,
+            detail="A prompt is required.",
+        )
+
+    if len(prompt) > 4000:
+        raise HTTPException(
+            status_code=400,
+            detail="Prompt is too long.",
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(
+                "http://127.0.0.1:11434/api/chat",
+                json={
+                    "model": "qwen2.5:1.5b",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        }
+                    ],
+                    "stream": False,
+                    "options": {
+                        "num_predict": 300,
+                    },
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        return {
+            "status": "completed",
+            "provider": "ollama",
+            "model": "qwen2.5:1.5b",
+            "answer": data.get("message", {}).get("content", ""),
+        }
+
+    except (httpx.HTTPError, ValueError):
+        raise HTTPException(
+            status_code=503,
+            detail="Local Ollama is unavailable.",
+        )

@@ -1,4 +1,4 @@
-
+﻿
 APPROVED_FREE_PROVIDERS = (
     "gemini",
     "groq",
@@ -17,6 +17,14 @@ def get_fallback_order(
     Actual API errors are handled by the caller.
     """
 
+    if requested_provider == "ollama":
+        import os
+
+        if os.getenv("ENABLE_LOCAL_OLLAMA", "false").lower() != "true":
+            raise ValueError("Local Ollama is disabled")
+
+        return ("ollama",)
+
     if requested_provider not in APPROVED_FREE_PROVIDERS:
         raise ValueError("Provider is not approved")
 
@@ -30,3 +38,4 @@ def get_fallback_order(
     )
 
     return (requested_provider,) + alternatives
+

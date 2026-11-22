@@ -1,4 +1,4 @@
-
+﻿
 from dataclasses import dataclass
 
 
@@ -10,6 +10,10 @@ class ModelPolicy:
 
 
 APPROVED_MODELS = {
+    "ollama": ModelPolicy(
+        provider="ollama",
+        model_id="qwen2.5:1.5b",
+    ),
     "gemini": ModelPolicy(
         provider="gemini",
         model_id="gemini-3.5-flash-lite",
@@ -48,3 +52,4 @@ def validate_model(
         )
 
     return True
+
