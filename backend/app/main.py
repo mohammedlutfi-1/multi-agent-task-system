@@ -2167,8 +2167,9 @@ async def analyze_student_progress(
                 detail="Academic analysis context exceeds the limit.",
             )
 
-        quota = await reserve_student_ai_calls(
+        quota = await reserve_student_ai_request(
             user_id=user_id,
+            request_id=str(uuid4()),
             requested_calls=1,
         )
 
@@ -2178,28 +2179,47 @@ async def analyze_student_progress(
                 detail="Daily Student AI allowance exhausted.",
             )
 
-        async with httpx.AsyncClient(timeout=60) as client:
+        reservation_id = quota["reservation_id"]
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
 
-            async def ai_caller(messages, max_tokens):
-                return await call_ai_with_fallback(
-                    client=client,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    provider_order=(
-                        "groq", "gemini", "openrouter"
-                    ),
-                    personal_keys=personal_keys,
+                async def ai_caller(messages, max_tokens):
+                    return await call_ai_with_fallback(
+                        client=client,
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        provider_order=(
+                            "groq", "gemini", "openrouter"
+                        ),
+                        personal_keys=personal_keys,
+                    )
+
+                result = await generate_progress_analysis(
+                    progress=progress,
+                    ai_caller=ai_caller,
                 )
+        except BaseException:
+            try:
+                await settle_student_ai_request(
+                    reservation_id=reservation_id,
+                    calls_charged=0,
+                )
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "Progress Tracker quota refund failed"
+                )
+            raise
 
-            result = await generate_progress_analysis(
-                progress=progress,
-                ai_caller=ai_caller,
-            )
+        settlement = await settle_student_ai_request(
+            reservation_id=reservation_id,
+            calls_charged=1,
+        )
 
         return {
             **result,
             "progress": progress,
-            "calls_remaining": quota["calls_remaining"],
+            "calls_remaining": settlement["calls_remaining"],
             "daily_limit": quota["daily_limit"],
         }
 
