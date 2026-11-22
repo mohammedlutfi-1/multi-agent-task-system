@@ -1401,3 +1401,56 @@ async def get_student_aptitude_history(
         return response.json()
 
 # === End Step 635B.5 ===
+
+
+async def create_collaboration_with_quota(
+    user_id: str,
+    task: str,
+    selected_models: list[str],
+    max_rounds: int = 2,
+    credential_mode: str = "platform",
+    daily_limit: int = 10,
+) -> dict:
+    """Atomically reserve quota and create a collaboration task."""
+
+    if not user_id or not isinstance(task, str) or not task.strip():
+        raise ValueError("User ID and task are required")
+
+    if not 1 <= max_rounds <= 3:
+        raise ValueError("Invalid collaboration round count")
+
+    if not 1 <= len(selected_models) <= 4:
+        raise ValueError("Select between 1 and 4 models")
+
+    if credential_mode not in ("platform", "personal"):
+        raise ValueError("Invalid credential mode")
+
+    async with create_supabase_client() as client:
+        response = await client.post(
+            "rpc/create_collaboration_with_quota",
+            json={
+                "p_user_id": user_id,
+                "p_task": task,
+                "p_selected_models": selected_models,
+                "p_max_rounds": max_rounds,
+                "p_credential_mode": credential_mode,
+                "p_daily_limit": daily_limit,
+            },
+        )
+
+        response.raise_for_status()
+
+        records = response.json()
+
+        if not isinstance(records, list) or len(records) != 1:
+            raise RuntimeError("Invalid atomic quota response")
+
+        reservation = records[0]
+
+        if not isinstance(reservation.get("allowed"), bool):
+            raise RuntimeError("Invalid quota permission result")
+
+        if reservation["allowed"] and not reservation.get("task_id"):
+            raise RuntimeError("Atomic task creation returned no task ID")
+
+        return reservation

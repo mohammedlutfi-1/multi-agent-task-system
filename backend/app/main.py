@@ -39,11 +39,10 @@ from app.database import (
     get_student_ai_usage,
 )
 
-from app.database import reserve_user_ai_request
+from app.database import create_collaboration_with_quota
 from app.database import get_user_ai_usage
 from uuid import UUID
 from app.resume_worker import resume_worker
-from app.database import create_collaboration_task
 from app.collaboration_runner import run_claimed_collaboration
 from app.database import (
     get_user_collaboration_tasks,
@@ -1100,23 +1099,6 @@ async def collaborate_ai_models(
                 detail="Add at least two personal provider API keys in API Settings to start a multi-model collaboration.",
             )
 
-    try:
-        quota = await reserve_user_ai_request(
-            user_id=user["sub"],
-            daily_limit=10,
-        )
-    except (httpx.HTTPError, RuntimeError) as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="AI usage verification is temporarily unavailable",
-        ) from exc
-
-    if not quota["allowed"]:
-        raise HTTPException(
-            status_code=429,
-            detail="Daily AI request limit reached. Try again tomorrow (UTC).",
-        )
-
     if personal_keys is not None:
         selected_models = [
             provider
@@ -1129,7 +1111,7 @@ async def collaborate_ai_models(
     max_rounds = 2
 
     try:
-                saved_task = await create_collaboration_task(
+        reservation = await create_collaboration_with_quota(
             user_id=user["sub"],
             task=request.task,
             selected_models=selected_models,
@@ -1138,14 +1120,21 @@ async def collaborate_ai_models(
                 "personal" if request.use_personal_keys
                 else "platform"
             ),
+            daily_limit=10,
         )
     except (httpx.HTTPError, RuntimeError) as exc:
         raise HTTPException(
             status_code=503,
-            detail="Unable to create collaboration task",
+            detail="Unable to reserve quota and create collaboration task",
         ) from exc
 
-    task_id = UUID(str(saved_task["id"]))
+    if not reservation["allowed"]:
+        raise HTTPException(
+            status_code=429,
+            detail="Daily AI request limit reached. Try again tomorrow (UTC).",
+        )
+
+    task_id = UUID(str(reservation["task_id"]))
 
     async with httpx.AsyncClient(timeout=120) as client:
 
@@ -1167,7 +1156,7 @@ async def collaborate_ai_models(
         )
 
         result["task_id"] = str(task_id)
-        result["requests_remaining"] = quota["requests_remaining"]
+        result["requests_remaining"] = reservation["requests_remaining"]
 
         return result
 
