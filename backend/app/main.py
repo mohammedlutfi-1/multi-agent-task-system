@@ -1518,7 +1518,7 @@ async def summarize_student_document(
             try:
                 await settle_student_ai_request(
                     reservation_id=reservation_id,
-                    calls_charged=successful_ai_calls,
+                    calls_charged=0,
                 )
             except Exception:
                 import logging
