@@ -1454,3 +1454,78 @@ async def create_collaboration_with_quota(
             raise RuntimeError("Atomic task creation returned no task ID")
 
         return reservation
+
+
+async def reserve_student_ai_request(
+    user_id: str,
+    request_id: str,
+    requested_calls: int,
+) -> dict:
+    """Reserve Student AI quota using an idempotent request ID."""
+
+    from uuid import UUID
+
+    user_id = str(UUID(user_id))
+    request_id = str(UUID(request_id))
+
+    if type(requested_calls) is not int or not 1 <= requested_calls <= 30:
+        raise ValueError("Invalid requested AI call count.")
+
+    async with create_supabase_client() as client:
+        response = await client.post(
+            "rpc/reserve_student_ai_request",
+            json={
+                "p_user_id": user_id,
+                "p_request_id": request_id,
+                "p_requested_calls": requested_calls,
+            },
+        )
+
+        response.raise_for_status()
+        records = response.json()
+
+        if not isinstance(records, list) or len(records) != 1:
+            raise RuntimeError("Invalid AI reservation response.")
+
+        record = records[0]
+
+        if not isinstance(record, dict):
+            raise RuntimeError("Invalid AI reservation record.")
+
+        return record
+
+
+async def settle_student_ai_request(
+    reservation_id: str,
+    calls_charged: int,
+) -> dict:
+    """Finalize a reservation and refund unused calls atomically."""
+
+    from uuid import UUID
+
+    reservation_id = str(UUID(reservation_id))
+
+    if type(calls_charged) is not int or calls_charged < 0:
+        raise ValueError("Invalid charged AI call count.")
+
+    async with create_supabase_client() as client:
+        response = await client.post(
+            "rpc/settle_student_ai_request",
+            json={
+                "p_reservation_id": reservation_id,
+                "p_calls_charged": calls_charged,
+            },
+        )
+
+        response.raise_for_status()
+        records = response.json()
+
+        if not isinstance(records, list) or len(records) != 1:
+            raise RuntimeError("Invalid AI settlement response.")
+
+        record = records[0]
+
+        if not isinstance(record, dict):
+            raise RuntimeError("Invalid AI settlement record.")
+
+        return record

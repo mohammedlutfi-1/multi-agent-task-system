@@ -1,3 +1,5 @@
+from app.database import reserve_student_ai_request, settle_student_ai_request
+from uuid import uuid4
 from asyncio import tasks
 import os
 import json
@@ -1455,11 +1457,13 @@ async def summarize_student_document(
                 ),
             )
 
-        # Reserve section summaries plus final synthesis
+        # Reserve section summaries plus final synthesis.
         required_calls = len(chunks) + 1
+        request_id = str(uuid4())
 
-        quota = await reserve_student_ai_calls(
+        quota = await reserve_student_ai_request(
             user_id=user_id,
+            request_id=request_id,
             requested_calls=required_calls,
         )
 
@@ -1473,31 +1477,66 @@ async def summarize_student_document(
                 ),
             )
 
-        async with httpx.AsyncClient(timeout=60) as client:
+        reservation_id = quota["reservation_id"]
+        successful_ai_calls = 0
+        result = None
 
-            async def ai_caller(messages, max_tokens):
-                return await call_ai_with_fallback(
-                    client=client,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    provider_order=(
-                        "groq",
-                        "gemini",
-                        "openrouter",
-                    ),
-                    personal_keys=personal_keys,
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+
+                async def ai_caller(messages, max_tokens):
+                    nonlocal successful_ai_calls
+
+                    response = await call_ai_with_fallback(
+                        client=client,
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        provider_order=(
+                            "groq",
+                            "gemini",
+                            "openrouter",
+                        ),
+                        personal_keys=personal_keys,
+                    )
+
+                    if (
+                        isinstance(response, dict)
+                        and isinstance(response.get("answer"), str)
+                        and response["answer"].strip()
+                    ):
+                        successful_ai_calls += 1
+
+                    return response
+
+                result = await summarize_document(
+                    text=text,
+                    title=title,
+                    ai_caller=ai_caller,
+                    generation_type=request.generation_type,
                 )
+        except BaseException:
+            try:
+                await settle_student_ai_request(
+                    reservation_id=reservation_id,
+                    calls_charged=successful_ai_calls,
+                )
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "Student AI quota settlement failed for reservation %s",
+                    reservation_id,
+                )
+            raise
+        else:
+            settlement = await settle_student_ai_request(
+                reservation_id=reservation_id,
+                calls_charged=successful_ai_calls,
+            )
 
-            result = await summarize_document(
-                text=text,
-                title=title,
-                ai_caller=ai_caller,
-                generation_type=request.generation_type,
-)
         return {
             **result,
             "document_id": str(document_id),
-            "calls_remaining": quota["calls_remaining"],
+            "calls_remaining": settlement["calls_remaining"],
             "daily_limit": quota["daily_limit"],
         }
 
