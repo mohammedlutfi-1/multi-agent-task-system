@@ -849,6 +849,11 @@ async def test_gemini(request: AIRequest):
 # Provider fallback (independent test endpoint)
 # ---------------------------------------
 
+import asyncio
+
+OLLAMA_INFERENCE_SEMAPHORE = asyncio.Semaphore(1)
+
+
 async def call_ai_with_fallback(
     client: httpx.AsyncClient,
     messages: list[dict[str, str]],
@@ -904,20 +909,40 @@ async def call_ai_with_fallback(
 
         try:
             if provider == "ollama":
-                response = await client.post(
-                    "http://127.0.0.1:11434/api/chat",
+                if OLLAMA_INFERENCE_SEMAPHORE.locked():
+                    attempted.append({
+                        "provider": provider,
+                        "status": "unavailable",
+                    })
+                    continue
+
+                async with OLLAMA_INFERENCE_SEMAPHORE:
+                    response = await client.post(
+                        "http://127.0.0.1:11434/api/chat",
                     json={
                         "model": model,
                         "messages": messages,
                         "stream": False,
                         "options": {"num_predict": min(max_tokens, 800)},
                     },
-                    timeout=120,
+                    timeout=httpx.Timeout(
+                        connect=5.0,
+                        read=120.0,
+                        write=10.0,
+                        pool=5.0,
+                    ),
                 )
                 response.raise_for_status()
-                answer = response.json()["message"]["content"]
-                if not answer.strip():
-                    raise ValueError("Ollama returned an empty answer")
+                try:
+                    answer = response.json()["message"]["content"]
+                    if not isinstance(answer, str) or not answer.strip():
+                        raise ValueError("Ollama returned an empty answer")
+                except (ValueError, KeyError, TypeError) as exc:
+                    attempted.append({
+                        "provider": provider,
+                        "status": "unavailable",
+                    })
+                    continue
             elif provider == "groq":
                 answer = await call_groq_model(
                     client, messages, api_key,
@@ -960,6 +985,18 @@ async def call_ai_with_fallback(
                 "provider": provider,
                 "status": "retryable_error",
                 "http_status": exc.status_code,
+            })
+
+        except httpx.HTTPStatusError as exc:
+            if provider != "ollama" or exc.response.status_code not in (
+                429, 500, 502, 503, 504
+            ):
+                raise
+
+            attempted.append({
+                "provider": provider,
+                "status": "retryable_error",
+                "http_status": exc.response.status_code,
             })
 
         except (httpx.TimeoutException, httpx.TransportError):
@@ -1147,12 +1184,11 @@ async def collaborate_ai_models(
                 detail="Select 2-4 distinct approved AI providers.",
             )
 
-        if "ollama" in requested:
-            if os.getenv("ENABLE_LOCAL_OLLAMA", "false").lower() != "true":
-                raise HTTPException(
-                    status_code=400,
-                    detail="Local Ollama is disabled.",
-                )
+        if "ollama" in requested and os.getenv("ENABLE_LOCAL_OLLAMA", "false").lower() != "true":
+            raise HTTPException(
+                status_code=400,
+                detail="Local Ollama is disabled.",
+            )
 
         if request.use_personal_keys:
             missing = [
@@ -1411,6 +1447,9 @@ async def remove_personal_api_key(
 
 async def resume_saved_collaboration(saved_task: dict) -> dict:
     """Resume an eligible platform collaboration."""
+
+    selected_models = saved_task["selected_models"]
+
 
     task_id = UUID(str(saved_task["id"]))
 
@@ -2594,6 +2633,7 @@ async def test_local_ollama(
     request: AIRequest,
     user: dict = Depends(verify_user),
 ):
+
     if os.getenv("ENABLE_LOCAL_OLLAMA", "false").lower() != "true":
         raise HTTPException(
             status_code=503,

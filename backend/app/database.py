@@ -751,7 +751,7 @@ async def get_due_collaboration_tasks() -> list[dict]:
 
     async with create_supabase_client() as client:
         response = await client.post(
-            "rpc/get_due_collaboration_tasks",
+            "rpc/get_due_collaboration_tasks_with_owner",
             json={},
         )
 

@@ -22,7 +22,7 @@ type Result = {
 type HistoryTask = { id: string; task: string; status: string; created_at: string; final_answer: string | null };
 type SavedTurn = { turn_number: number; round_number: number; requested_provider: string; actual_provider: string; model_id: string; response: string };
 const API = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
-const names: Record<string,string> = {gemini:"Gemini 3.5 Flash-Lite",groq:"Groq GPT-OSS 20B",openrouter:"OpenRouter"};
+const names: Record<string,string> = {gemini:"Gemini 3.5 Flash-Lite",groq:"Groq GPT-OSS 20B",openrouter:"OpenRouter",ollama:"Ollama Qwen 2.5 1.5B"};
 async function request(path:string, init:RequestInit = {}) {
   const {data:{session},error} = await createClient().auth.getSession();
   if(error || !session?.access_token) throw new Error("Please sign in again.");
@@ -33,6 +33,11 @@ async function request(path:string, init:RequestInit = {}) {
 }
 export default function CollaborationPage(){
   const [task,setTask]=useState("");
+  const [cloudSelection,setCloudSelection]=useState<string[]>(["gemini","groq"]);
+  const ollamaEnabled = process.env.NEXT_PUBLIC_ENABLE_LOCAL_OLLAMA === "true";
+  const availableCloudModels = ollamaEnabled
+    ? ["gemini","groq","ollama"]
+    : ["gemini","groq"];
   const [usePersonalKeys, setUsePersonalKeys] = useState(false);
   const [acceptProviderCharges, setAcceptProviderCharges] = useState(false);
   const [personalProviders, setPersonalProviders] = useState<string[]>([]);
@@ -51,7 +56,7 @@ export default function CollaborationPage(){
   const busy=loading || !!opening;
     const selectedProviders = usePersonalKeys
     ? personalProviders
-    : ["gemini", "groq"];
+    : cloudSelection;
 
   const personalModeBlocked =
     usePersonalKeys &&
@@ -254,6 +259,10 @@ export default function CollaborationPage(){
 }
   async function generate(){
         if (busy || !task.trim()) return;
+    if (selectedProviders.length < 2 || selectedProviders.length > 4) {
+      setError("Select between 2 and 4 AI models.");
+      return;
+    }
 
     if (usePersonalKeys && !acceptProviderCharges) {
       setError("Please accept potential provider charges.");
@@ -269,6 +278,7 @@ export default function CollaborationPage(){
         method: "POST",
         body: JSON.stringify({
           task: task.trim(),
+          selected_models: selectedProviders,
           use_personal_keys: usePersonalKeys,
           accept_provider_charges:
             usePersonalKeys && acceptProviderCharges,
@@ -434,7 +444,43 @@ if (
 
 <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
   <label htmlFor="task" className="sr-only">Your task</label><textarea id="task" rows={4} maxLength={5000} disabled={busy} value={task} onChange={e=>setTask(e.target.value)} placeholder="Ask a question, solve a problem, or plan a project…" className="w-full resize-y rounded-xl p-3 text-base outline-none focus:ring-2 focus:ring-indigo-100"/><div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-4"><span className="rounded-md bg-slate-100 px-3 py-2 text-xs">{selectedProviders.length} AI models</span><span className="rounded-md bg-slate-100 px-3 py-2 text-xs">2 rounds</span><button onClick={()=>void generate()} disabled={busy || !task.trim() || personalModeBlocked} className="ml-auto rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">{loading?"Collaborating…":"Collaborate →"}</button></div>{loading&&<p role="status" className="mt-3 text-sm text-indigo-600">Running AI discussion and final synthesis…</p>}{error&&<p role="alert" className="mt-3 text-sm text-red-600">{error}</p>}</section>
-        <section id="ai-models"><h3 className="mb-3 font-semibold">Your AI team</h3><div className="grid gap-3 sm:grid-cols-2">{selectedProviders.map(p=><div key={p} className="flex items-center gap-4 rounded-xl border border-slate-200 bg-white p-4"><span className={`grid h-11 w-11 place-items-center rounded-xl text-2xl ${p==="gemini"?"bg-blue-50 text-blue-600":"bg-orange-50 text-orange-600"}`}>✦</span><div><h4 className="font-semibold">{names[p]}</h4><p className="text-xs text-slate-500">Scheduled participant</p></div></div>)}</div></section>
+        <section id="ai-models">
+          <h3 className="mb-3 font-semibold">Your AI team</h3>
+          <p className="mb-3 text-sm text-slate-500">
+            {usePersonalKeys
+              ? "Your configured personal API providers."
+              : "Choose at least two models for collaboration."}
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {(usePersonalKeys ? personalProviders : availableCloudModels).map(p => {
+              const selected = selectedProviders.includes(p);
+              return (
+                <label key={p} className={`flex items-center gap-4 rounded-xl border bg-white p-4 ${
+                  selected ? "border-indigo-500" : "border-slate-200"
+                } ${usePersonalKeys ? "opacity-75" : "cursor-pointer"}`}>
+                  <input
+                    type="checkbox"
+                    checked={selected}
+                    disabled={busy || usePersonalKeys}
+                    onChange={() => setCloudSelection(current =>
+                      current.includes(p)
+                        ? current.filter(item => item !== p)
+                        : [...current, p]
+                    )}
+                    className="h-4 w-4 accent-indigo-600"
+                    aria-label={`Select ${names[p]}`}
+                  />
+                  <div>
+                    <h4 className="font-semibold">{names[p]}</h4>
+                    <p className="text-xs text-slate-500">
+                      {selected ? "Selected participant" : "Available model"}
+                    </p>
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+        </section>
         {!result&&<section><h3 className="mb-3 font-semibold">Get started</h3><div className="grid gap-3 sm:grid-cols-3">{["Research a topic","Generate a project plan","Solve a problem"].map(p=><button key={p} disabled={busy} onClick={()=>setTask(p+": ")} className="rounded-xl border border-slate-200 bg-white p-4 text-left text-sm hover:border-indigo-400 disabled:opacity-50">{p} →</button>)}</div></section>}
         {result && result.status === "paused" && (
   <section
