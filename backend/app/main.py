@@ -884,12 +884,13 @@ async def call_ai_with_fallback(
     # Ollama-only requests may fall back to authorized cloud providers.
     # Other model selections retain their existing provider order.
     if provider_order == ("ollama",):
-        if personal_keys is None:
-            fallback_candidates = ("groq", "gemini")
-        else:
+        fallback_candidates = (
+            "gemini", "groq", "openrouter"
+        )
+
+        if personal_keys is not None:
             fallback_candidates = tuple(
-                name
-                for name in ("groq", "gemini", "openrouter")
+                name for name in fallback_candidates
                 if personal_keys.get(name)
             )
 
@@ -2115,14 +2116,20 @@ async def send_tutor_message(
 
         # Persist question and answer together.
 
-        saved_messages = await save_student_ai_exchange(
-            user_id=user_id,
-            chat_id=chat_id,
-            question=question,
-            answer=result["answer"],
-            provider=result.get("provider"),
-            model_id=result.get("model"),
-        )
+        try:
+            saved_messages = await save_student_ai_exchange(
+                user_id=user_id,
+                chat_id=chat_id,
+                question=question,
+                answer=result["answer"],
+                provider=result.get("provider"),
+                model_id=result.get("model"),
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Conversation not found.",
+            ) from exc
 
         # Automatically name the first conversation.
 
