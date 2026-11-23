@@ -1017,6 +1017,15 @@ async def save_student_ai_exchange(
         },
     ]
 
+    # Verify ownership before writing with service-role access.
+    owned_chat = await get_student_ai_chat(
+        user_id=user_id,
+        chat_id=chat_id,
+    )
+
+    if not owned_chat:
+        raise ValueError("Conversation not found or access denied.")
+
     async with create_supabase_client() as client:
         response = await client.post(
             "student_ai_messages",
