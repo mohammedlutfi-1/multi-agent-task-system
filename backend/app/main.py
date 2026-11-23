@@ -1,3 +1,5 @@
+from app.database import reserve_platform_provider_call
+from app.ollama_queue_dispatcher import call_ollama_via_queue
 from app.database import reserve_student_ai_request, settle_student_ai_request
 from uuid import uuid4
 from asyncio import tasks
@@ -879,6 +881,23 @@ async def call_ai_with_fallback(
         raise ValueError("Invalid provider selection")
 
 
+    # Ollama-only requests may fall back to authorized cloud providers.
+    # Other model selections retain their existing provider order.
+    if provider_order == ("ollama",):
+        if personal_keys is None:
+            fallback_candidates = ("groq", "gemini")
+        else:
+            fallback_candidates = tuple(
+                name
+                for name in ("groq", "gemini", "openrouter")
+                if personal_keys.get(name)
+            )
+
+        provider_order = (
+            "ollama",
+            *fallback_candidates,
+        )
+
     providers = [
         (name, *provider_map[name])
         for name in provider_order
@@ -907,42 +926,50 @@ async def call_ai_with_fallback(
             })
             continue
 
+        # Shared budgets apply only to platform-funded cloud calls.
+        if personal_keys is None and provider in ("groq", "gemini", "openrouter"):
+            daily_limit = int(
+                os.getenv(
+                    f"PLATFORM_{provider.upper()}_DAILY_LIMIT",
+                    "20" if provider == "openrouter" else "50",
+                )
+            )
+
+            try:
+                reservation = await reserve_platform_provider_call(
+                    provider,
+                    daily_limit,
+                )
+            except Exception:
+                # Never call a platform-funded provider without
+                # a confirmed reservation.
+                attempted.append({
+                    "provider": provider,
+                    "status": "unavailable",
+                })
+                continue
+
+            if not reservation["allowed"]:
+                attempted.append({
+                    "provider": provider,
+                    "status": "unavailable",
+                })
+                continue
+
         try:
             if provider == "ollama":
-                if OLLAMA_INFERENCE_SEMAPHORE.locked():
+                answer = await call_ollama_via_queue(
+                    messages=messages,
+                    max_tokens=min(max_tokens, 800),
+                )
+
+                if not answer:
                     attempted.append({
                         "provider": provider,
                         "status": "unavailable",
                     })
                     continue
 
-                async with OLLAMA_INFERENCE_SEMAPHORE:
-                    response = await client.post(
-                        "http://127.0.0.1:11434/api/chat",
-                    json={
-                        "model": model,
-                        "messages": messages,
-                        "stream": False,
-                        "options": {"num_predict": min(max_tokens, 800)},
-                    },
-                    timeout=httpx.Timeout(
-                        connect=5.0,
-                        read=120.0,
-                        write=10.0,
-                        pool=5.0,
-                    ),
-                )
-                response.raise_for_status()
-                try:
-                    answer = response.json()["message"]["content"]
-                    if not isinstance(answer, str) or not answer.strip():
-                        raise ValueError("Ollama returned an empty answer")
-                except (ValueError, KeyError, TypeError) as exc:
-                    attempted.append({
-                        "provider": provider,
-                        "status": "unavailable",
-                    })
-                    continue
             elif provider == "groq":
                 answer = await call_groq_model(
                     client, messages, api_key,
@@ -1172,7 +1199,10 @@ async def collaborate_ai_models(
         requested = request.selected_models
 
         if (
-            not 2 <= len(requested) <= 4
+            not (
+                2 <= len(requested) <= 4
+                or requested == ["ollama"]
+            )
             or len(set(requested)) != len(requested)
             or any(
                 provider not in ("gemini", "groq", "openrouter", "ollama")
@@ -1447,6 +1477,14 @@ async def remove_personal_api_key(
 
 async def resume_saved_collaboration(saved_task: dict) -> dict:
     """Resume an eligible platform collaboration."""
+
+    if (
+        saved_task.get("credential_mode") != "platform"
+        or saved_task.get("auto_resume_enabled") is not True
+    ):
+        raise ValueError(
+            "Only authorized platform collaborations may auto-resume."
+        )
 
     selected_models = saved_task["selected_models"]
 
@@ -2634,56 +2672,65 @@ async def test_local_ollama(
     user: dict = Depends(verify_user),
 ):
 
-    if os.getenv("ENABLE_LOCAL_OLLAMA", "false").lower() != "true":
+    raise HTTPException(
+        status_code=404,
+        detail="Endpoint not available.",
+    )
+
+
+# ============================================================
+# Private Ollama laptop worker endpoints
+# ============================================================
+
+from app.ollama_worker_auth import verify_ollama_worker
+from app.database import (
+    claim_ollama_inference_job,
+    complete_ollama_inference_job,
+)
+
+
+class OllamaWorkerCompletion(BaseModel):
+    job_id: UUID
+    lease_token: UUID
+    result_text: str = Field(min_length=1, max_length=20000)
+
+
+@app.post("/internal/ollama/claim")
+async def ollama_worker_claim(
+    _: None = Depends(verify_ollama_worker),
+):
+    """Return one pending job to the authenticated laptop worker."""
+
+    job = await claim_ollama_inference_job(
+        worker_id="college-ollama-worker",
+        lease_seconds=180,
+    )
+
+    return {
+        "job": job,
+    }
+
+
+@app.post("/internal/ollama/complete")
+async def ollama_worker_complete(
+    request: OllamaWorkerCompletion,
+    _: None = Depends(verify_ollama_worker),
+):
+    """Accept a result only for a valid active job lease."""
+
+    completed = await complete_ollama_inference_job(
+        job_id=str(request.job_id),
+        worker_id="college-ollama-worker",
+        lease_token=str(request.lease_token),
+        result_text=request.result_text,
+    )
+
+    if not completed:
         raise HTTPException(
-            status_code=503,
-            detail="Local Ollama is disabled.",
+            status_code=409,
+            detail="Job completion rejected.",
         )
 
-    prompt = request.task.strip()
-
-    if not prompt:
-        raise HTTPException(
-            status_code=400,
-            detail="A prompt is required.",
-        )
-
-    if len(prompt) > 4000:
-        raise HTTPException(
-            status_code=400,
-            detail="Prompt is too long.",
-        )
-
-    try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            response = await client.post(
-                "http://127.0.0.1:11434/api/chat",
-                json={
-                    "model": "qwen2.5:1.5b",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": prompt,
-                        }
-                    ],
-                    "stream": False,
-                    "options": {
-                        "num_predict": 300,
-                    },
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-
-        return {
-            "status": "completed",
-            "provider": "ollama",
-            "model": "qwen2.5:1.5b",
-            "answer": data.get("message", {}).get("content", ""),
-        }
-
-    except (httpx.HTTPError, ValueError):
-        raise HTTPException(
-            status_code=503,
-            detail="Local Ollama is unavailable.",
-        )
+    return {
+        "status": "completed",
+    }
