@@ -1,65 +1,214 @@
 # Environment variables
+
+
 .env
+
+
 .env.local
+
+
 .env.*.local
 
+
+
+
+
 # Node
+
+
 node_modules/
+
+
 .next/
+
+
 out/
+
+
 dist/
 
+
+
+
+
 # Python
+
+
 __pycache__/
+
+
 *.py[cod]
+
+
 *.pyo
+
+
 .venv/
+
+
 venv/
+
+
 env/
 
+
+
+
+
 # Testing / coverage
+
+
 .pytest_cache/
+
+
 .coverage
+
+
 htmlcov/
 
+
+
+
+
 # IDE
+
+
 .vscode/
+
+
 .idea/
 
+
+
+
+
 # OS
+
+
 .DS_Store
+
+
 Thumbs.db
 
+
+
+
+
 # Logs
+
+
 *.log
+
+
+
+
 
 # Deployment safety
+
+
 .env
+
+
 .env.*
+
+
 !.env.example
+
+
 !.env.*.example
 
+
+
+
+
 # Python virtual environments and caches
+
+
 .venv/
+
+
 venv/
+
+
 __pycache__/
+
+
 *.py[cod]
+
+
 .pytest_cache/
 
+
+
+
+
 # Local databases
+
+
 *.db
+
+
 *.db-journal
+
+
 *.sqlite
+
+
 *.sqlite3
 
+
+
+
+
 # Project backup files
+
+
 *.bak
+
+
 *.bak.*
+
+
 *_backup.py
+
+
 *_before_*.py
 
+
+
+
+
 # Build and local artifacts
+
+
 .next/
+
+
 node_modules/
+
+
 *.log
+
+
 .DS_Store
+
+
+
+# Local project backups
+
+backups/
+
+# Additional local backup protection
+.deployment-backups/
+*.bak_*
+*.backup-*
+*.backup_*
+*.backup
+*.backup.*
+*.backup_*
+*.py.backup*
+*.py.bak*
+*.pyc
+/node_modules/
+*.py.*.bak
+*.tsx.*.bak

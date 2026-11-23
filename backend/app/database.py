@@ -1529,3 +1529,216 @@ async def settle_student_ai_request(
             raise RuntimeError("Invalid AI settlement record.")
 
         return record
+
+
+# ============================================================
+# Ollama inference bridge database helpers
+# ============================================================
+
+async def create_ollama_inference_job(
+    messages: list[dict[str, str]],
+    max_tokens: int = 800,
+) -> str:
+
+    if not isinstance(messages, list) or not 1 <= len(messages) <= 30:
+        raise ValueError("Invalid Ollama message count.")
+
+    total_chars = 0
+
+    for message in messages:
+        if not isinstance(message, dict):
+            raise ValueError("Invalid Ollama message structure.")
+
+        if set(message) != {"role", "content"}:
+            raise ValueError("Invalid Ollama message fields.")
+
+        role = message["role"]
+        content = message["content"]
+
+        if role not in ("system", "user", "assistant"):
+            raise ValueError("Invalid Ollama message role.")
+
+        if (
+            not isinstance(content, str)
+            or not content.strip()
+            or len(content) > 12000
+        ):
+            raise ValueError("Invalid Ollama message content.")
+
+        total_chars += len(content)
+
+        if total_chars > 40000:
+            raise ValueError("Ollama messages exceed total limit.")
+
+    if type(max_tokens) is not int or not 1 <= max_tokens <= 800:
+        raise ValueError("Invalid Ollama max_tokens.")
+    """Create a short-lived Ollama inference request."""
+
+    if not messages or not 1 <= max_tokens <= 800:
+        raise ValueError("Invalid Ollama inference request")
+
+    async with create_supabase_client() as client:
+        response = await client.post(
+            "ollama_inference_jobs",
+            headers={"Prefer": "return=representation"},
+            json={
+                "model": "qwen2.5:1.5b",
+                "messages": messages,
+                "max_tokens": max_tokens,
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    if not isinstance(data, list) or len(data) != 1:
+        raise ValueError("Unexpected Ollama job creation response")
+
+    return str(data[0]["id"])
+
+
+async def claim_ollama_inference_job(
+    worker_id: str,
+    lease_seconds: int = 90,
+) -> dict | None:
+    """Atomically claim one pending inference job."""
+
+    if not worker_id or not 10 <= lease_seconds <= 180:
+        raise ValueError("Invalid worker claim parameters")
+
+    async with create_supabase_client() as client:
+        response = await client.post(
+            "rpc/claim_ollama_inference_job",
+            json={
+                "p_worker_id": worker_id,
+                "p_lease_seconds": lease_seconds,
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    if not isinstance(data, list):
+        raise ValueError("Unexpected Ollama claim response")
+
+    return data[0] if data else None
+
+
+async def complete_ollama_inference_job(
+    job_id: str,
+    worker_id: str,
+    lease_token: str,
+    result_text: str,
+) -> bool:
+    """Complete an inference job using its valid lease token."""
+
+    if not all((job_id, worker_id, lease_token, result_text.strip())):
+        raise ValueError("Invalid Ollama completion parameters")
+
+    async with create_supabase_client() as client:
+        response = await client.post(
+            "rpc/complete_ollama_inference_job",
+            json={
+                "p_job_id": job_id,
+                "p_worker_id": worker_id,
+                "p_lease_token": lease_token,
+                "p_result_text": result_text,
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    if not isinstance(data, bool):
+        raise ValueError("Unexpected Ollama completion response")
+
+    return data
+
+
+async def get_ollama_inference_job(job_id: str) -> dict | None:
+    """Read an inference job's current state."""
+
+    async with create_supabase_client() as client:
+        response = await client.get(
+            "ollama_inference_jobs",
+            params={
+                "id": f"eq.{job_id}",
+                "select": "id,status,result_text,expires_at",
+                "limit": "1",
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    if not isinstance(data, list):
+        raise ValueError("Unexpected Ollama job lookup response")
+
+    return data[0] if data else None
+
+
+async def cancel_ollama_inference_job(job_id: str) -> bool:
+    """Cancel an unfinished Ollama job using the service-role RPC."""
+    import uuid
+
+    try:
+        normalized_id = str(uuid.UUID(job_id))
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError("Invalid Ollama job ID") from None
+
+    async with create_supabase_client() as client:
+        response = await client.post(
+            "rpc/cancel_ollama_inference_job",
+            json={"p_job_id": normalized_id},
+        )
+        response.raise_for_status()
+        result = response.json()
+
+    if not isinstance(result, bool):
+        raise ValueError("Unexpected Ollama cancellation response")
+
+    return result
+
+
+async def reserve_platform_provider_call(
+    provider: str,
+    daily_limit: int,
+) -> dict:
+    """Atomically reserve one platform-funded cloud provider call."""
+
+    if provider not in ("groq", "gemini", "openrouter"):
+        raise ValueError("Invalid platform provider")
+
+    if (
+        isinstance(daily_limit, bool)
+        or not isinstance(daily_limit, int)
+        or not 1 <= daily_limit <= 100000
+    ):
+        raise ValueError("Invalid platform provider daily limit")
+
+    async with create_supabase_client() as client:
+        response = await client.post(
+            "rpc/reserve_platform_provider_call",
+            json={
+                "p_provider": provider,
+                "p_daily_limit": daily_limit,
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+
+    if (
+        not isinstance(payload, list)
+        or len(payload) != 1
+        or not isinstance(payload[0], dict)
+    ):
+        raise ValueError("Invalid provider reservation response")
+
+    result = payload[0]
+
+    if (
+        type(result.get("allowed")) is not bool
+        or type(result.get("calls_reserved")) is not int
+        or type(result.get("calls_remaining")) is not int
+        or result["calls_reserved"] < 0
+        or result["calls_remaining"] < 0
+    ):
+        raise ValueError("Invalid provider reservation values")
+
+    return result
