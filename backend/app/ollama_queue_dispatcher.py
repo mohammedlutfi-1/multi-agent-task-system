@@ -14,7 +14,8 @@ from app.database import (
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_WAIT_SECONDS = 12.0
+OLLAMA_WAIT_SECONDS = 60.0
+OLLAMA_CLAIM_SECONDS = 8.0
 OLLAMA_POLL_SECONDS = 0.75
 
 
@@ -56,7 +57,9 @@ async def _poll_ollama_queue(
         return None
 
     active_job["id"] = job_id
-    deadline = monotonic() + OLLAMA_WAIT_SECONDS
+    started = monotonic()
+    deadline = started + OLLAMA_WAIT_SECONDS
+    claim_deadline = started + OLLAMA_CLAIM_SECONDS
 
     while monotonic() < deadline:
         await asyncio.sleep(
@@ -76,6 +79,10 @@ async def _poll_ollama_queue(
             return None
 
         status = job.get("status")
+
+        if status == "pending" and monotonic() >= claim_deadline:
+            logger.info("Ollama worker did not claim job; using fallback.")
+            return None
 
         if status == "completed":
             answer = job.get("result_text")
