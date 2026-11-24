@@ -28,13 +28,19 @@ const names: Record<string,string> = {gemini:"Gemini 3.5 Flash-Lite",groq:"Groq 
 function isIndividualOllama(models?: string[]) {
   return models?.length === 1 && models[0] === "ollama";
 }
+function shouldPollTask(status: string, retryStatus?: string) {
+  if (status === "running" || status === "pending") return true;
+  return status === "paused" && (!retryStatus || retryStatus === "waiting_for_capacity");
+}
 async function request(path:string, init:RequestInit = {}) {
   const {data:{session},error} = await createClient().auth.getSession();
   if(error || !session?.access_token) throw new Error("Please sign in again.");
   const response = await fetch(`${API}${path}`, {...init, cache:"no-store", headers:{"Content-Type":"application/json",Authorization:`Bearer ${session.access_token}`}, signal:AbortSignal.timeout(init.method === "POST" ? 360000 : 30000)});
-  const data = await response.json();
-  if(!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Request failed (${response.status})`);
-  return data;
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => null);
+    throw new Error(typeof errorBody?.detail === "string" ? errorBody.detail : `Request failed (${response.status}).`);
+  }
+  return response.json();
 }
 export default function CollaborationPage(){
   const [task,setTask]=useState("");
@@ -144,7 +150,7 @@ export default function CollaborationPage(){
   if (
     !active ||
     !result ||
-    !["paused", "running", "pending"].includes(result.status) ||
+    !shouldPollTask(result.status, result.retry_status) ||
     loading ||
     opening
   ) {
@@ -192,7 +198,7 @@ export default function CollaborationPage(){
       retry_status: data.task.retry_status,
       });
 
-      if (["completed", "failed"].includes(data.task.status)) {
+      if (!shouldPollTask(data.task.status, data.task.retry_status)) {
         void loadHistory();
         return;
       }
@@ -213,7 +219,7 @@ export default function CollaborationPage(){
     clearTimeout(timer);
   };
 
-}, [active, result?.status, loading, opening, loadHistory]);
+}, [active, result?.status, result?.retry_status, loading, opening, loadHistory]);
   function startNew(){if(busy)return;setTask("");setResult(null);setActive(null);setError("");setMenu(false);}
   async function openSaved(id: string) {
   if (busy) return;
@@ -355,7 +361,6 @@ if (
         {historyLoading&&<p className="text-xs text-slate-400">Loading history…</p>}{historyError&&<p className="text-xs text-rose-300">{historyError}</p>}{!historyLoading&&!historyError&&!history.length&&<p className="text-xs text-slate-400">No saved collaborations yet.</p>}
         {history.map(item=><button key={item.id} title={item.task} disabled={busy} onClick={()=>void openSaved(item.id)} className={`block w-full rounded-lg p-3 text-left hover:bg-slate-800 disabled:opacity-60 ${active===item.id?"bg-slate-700":""}`}><p className="truncate text-sm text-slate-100">{item.task}</p><p className="mt-1 text-xs capitalize text-slate-400">{opening===item.id?"Opening…":item.status}</p></button>)}
       </div>
-      <div className="border-t border-slate-700 pt-4 text-sm text-slate-400">Settings · Coming soon</div>
     </aside>
     {menu&&<button aria-label="Close navigation" onClick={()=>setMenu(false)} className="fixed inset-0 z-20 bg-black/40 lg:hidden"/>}
     <main className="lg:ml-72">

@@ -299,17 +299,17 @@ export default function StudentPage() {
 
   const quickActions = [
     {
-      title: "Add Subject",
+      title: "Manage Subjects",
       icon: BookOpen,
       href: "/student/subjects",
     },
     {
-      title: "Plan Study Session",
+      title: "Open Study Planner",
       icon: CalendarDays,
       href: "/student/planner",
     },
     {
-      title: "Add Assignment",
+      title: "Manage Assignments",
       icon: ClipboardList,
       href: "/student/assignments",
     },

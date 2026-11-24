@@ -14,6 +14,8 @@ import {
   BrainCircuit,
   ChartNoAxesCombined,
   GraduationCap,
+  ListChecks,
+  UserCheck,
   FolderKanban,
   BriefcaseBusiness,
   Settings,
@@ -66,6 +68,16 @@ const navigation = [
     name: "Exam Preparation",
     href: "/student/exams",
     icon: GraduationCap,
+  },
+  {
+    name: "Mock Tests",
+    href: "/student/mock-tests",
+    icon: ListChecks,
+  },
+  {
+    name: "Attendance & Marks",
+    href: "/student/attendance",
+    icon: UserCheck,
   },
   {
     name: "Projects",

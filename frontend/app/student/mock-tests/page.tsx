@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 
 type Exam = {
@@ -273,6 +274,15 @@ export default function StudentMockTestsPage() {
           Create a mock test
         </h2>
 
+        {!loading && !error && (exams.length === 0 || (selectedExam && topics.length === 0)) && (
+          <p className="text-sm text-slate-600">
+            {exams.length === 0 ? "Add an exam with syllabus topics in " : "Add syllabus topics for this exam in "}
+            <Link href="/student/exams" className="font-medium text-indigo-700 underline">
+              Exam Preparation
+            </Link>.
+          </p>
+        )}
+
         <label className="block space-y-1 text-sm">
           <span className="font-medium">
             Exam
@@ -485,7 +495,9 @@ export default function StudentMockTestsPage() {
           <p className="text-sm text-slate-600">
             {result.exam_progress?.updated
               ? "Exam topic automatically marked complete."
-              : "Exam topic was not automatically marked complete."}
+              : result.exam_progress?.reason === "progress_update_unconfirmed"
+                ? "Your score was saved. Check Exam Preparation to confirm the topic status."
+                : "Exam topic was not automatically marked complete."}
           </p>
 
           <h3 className="font-semibold">

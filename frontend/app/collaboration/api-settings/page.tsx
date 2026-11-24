@@ -174,7 +174,7 @@ export default function APISettingsPage() {
           + New Collaboration
         </Link>
 
-        <Link href="/collaboration#models" className="rounded-lg px-3 py-3 text-sm hover:bg-slate-800">
+        <Link href="/collaboration#ai-models" className="rounded-lg px-3 py-3 text-sm hover:bg-slate-800">
           ◇ AI Models
         </Link>
 
