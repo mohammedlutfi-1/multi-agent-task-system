@@ -2632,18 +2632,30 @@ async def submit_student_mock_test(
     }
 
     if result["passed"]:
+        import logging
+
         from app.database import create_supabase_client
 
-        async with create_supabase_client() as db_client:
-            progress_response = await db_client.post(
-                "rpc/apply_mock_test_progress",
-                json={
-                    "p_attempt_id": attempt["id"],
-                    "p_user_id": user_id,
-                },
+        try:
+            async with create_supabase_client() as db_client:
+                progress_response = await db_client.post(
+                    "rpc/apply_mock_test_progress",
+                    json={"p_attempt_id": attempt["id"], "p_user_id": user_id},
+                )
+                progress_response.raise_for_status()
+                recorded_progress = progress_response.json()
+                if isinstance(recorded_progress, list) and len(recorded_progress) == 1:
+                    recorded_progress = recorded_progress[0]
+                if not isinstance(recorded_progress, dict) or type(recorded_progress.get("updated")) is not bool:
+                    raise ValueError("Unexpected exam progress response")
+                progress = recorded_progress
+        except (httpx.HTTPError, RuntimeError, ValueError):
+            # The grade is already saved. Keep it visible even when this
+            # secondary write fails or its outcome cannot be confirmed.
+            logging.getLogger(__name__).warning(
+                "Exam progress update could not be confirmed for mock attempt %s", attempt["id"]
             )
-            progress_response.raise_for_status()
-            progress = progress_response.json()
+            progress = {"updated": False, "reason": "progress_update_unconfirmed"}
 
     return {
         "attempt_id": attempt["id"],

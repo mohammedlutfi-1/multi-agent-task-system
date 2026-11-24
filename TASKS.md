@@ -1,5 +1,16 @@
 # Development tasks
 
+## Step 283 completion and rollout
+
+- [x] Preserve Steps 282AD–282AK and restore the `d5eab3d` tracked baseline.
+- [x] Audit both app modes, fix release-critical navigation and status handling, and preserve saved mock-test grades when exam-progress updates fail.
+- [x] Pass 50 backend tests, TypeScript, the isolated production build, and source-level link and route validation.
+- [x] Step 284. Start local smoke services, pass HTTP and mocked regression checks, and prepare a precise release allowlist.
+- [ ] Run the [single authenticated desktop and mobile browser pass](docs/step-284-final-release.md#one-manual-browser-pass). The sandboxed Edge renderer could not initialize.
+- [ ] After approval, use the [12-file release allowlist](docs/step-284-final-release.md#exact-staging-allowlist). Release and verify the backend first, then the matching frontend.
+
+Steps 282AD–282AK and their database validation are deferred. Their work is preserved in `backups/step-283-deferred-ollama-20261124-201248-224`.
+
 ## Completed
 
 - [x] Audit the release checkout, architecture, feature coverage, and production verification gaps.
@@ -25,7 +36,7 @@
 - [x] Step 282N. Owner confirmed the production two-account SQL passed and ended in rollback.
 - [x] Step 282O. Prepare the consolidated release, staging allowlist, verification results, and backend-first rollout sequence.
 
-- [ ] Verify the intended GitHub base and obtain separate approval before staging or deploying the [release package](docs/step-282o-release.md).
+- [x] Verified the intended baseline as `d5eab3d`. The [previous release package](docs/step-282o-release.md) is historical.
 - [ ] Before enabling Hybrid Ollama, validate the backend first and then enable the frontend flag with the updated backend in place. Confirm bridge connectivity, cloud budgets, and platform auto-resume.
 - [ ] Confirm whether Ollama queue retention has an external owner or schedule when addressing the retention gap.
 

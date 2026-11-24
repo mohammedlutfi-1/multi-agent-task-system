@@ -1,5 +1,19 @@
 # Development log
 
+## 2026-11-24 — Step 284
+
+- Started FastAPI on loopback with dotenv loading disabled, mocked inference and external database access blocked. Started the isolated Step 283 Next.js production build with placeholder public configuration. Local HTTP smoke passed three public HTML pages, nine protected page redirects, backend health, and five protected API checks.
+- Headless Edge failed to initialize its renderer in the sandbox. No authenticated browser or responsive interactions were claimed. The [release package](docs/step-284-final-release.md) consolidates the remaining browser checks, exact staging allowlist, and backend-first Git and deployment instructions.
+- Reran all 50 backend tests and TypeScript. No application changes were needed. Verified that deferred Ollama work, backups, and the six existing untracked exclusions are outside the proposed release. No Git index changes or publication actions occurred.
+
+## 2026-11-24 — Step 283
+
+- Archived the deferred Ollama policy and resource-protection changes in `backups/step-283-deferred-ollama-20261124-201248-224`. The backup contains the binary-capable tracked patch, full tracked and untracked source copies, and a SHA-256 manifest. Verified the restored tracked tree against `d5eab3d` before implementation. Left the six unrelated untracked files untouched.
+- Audited the Collaboration and Student routes and corresponding API paths. Corrected the AI Models link, added direct Mock Tests and Attendance navigation, aligned overview quick-action labels, removed the nonfunctional Collaboration settings placeholder, and replaced starter site metadata. Paused tasks without scheduled recovery stop polling and non-JSON HTTP errors display a status.
+- Mock-test submission now returns the saved grade if exam-progress synchronization fails or is uncertain. Accepts both object and single-row progress receipts. The UI explains the saved score and links users to Exam Preparation when a mock test lacks an exam or syllabus topics. Added four regression tests for the failure and ownership paths.
+- All 50 backend tests passed, including 46 baseline regressions. TypeScript and the isolated Next.js production build passed with placeholder public configuration and offline font fixtures. Static checks verified 55 internal links and anchors across 21 page routes and 19 AI and document API paths.
+- No database changes, live provider calls, protected environment access, commit, push or deployment occurred.
+
 ## 2026-11-24 — Steps 282N and 282O
 
 - The owner confirmed that the production two-account isolation SQL finished without assertion errors and ended in rollback.
