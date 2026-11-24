@@ -974,6 +974,14 @@ async def get_student_ai_messages(
         return list(reversed(records))
 
 
+class StudentAIWriteRejected(ValueError):
+    """The operation failed before any result could be committed."""
+
+
+class StudentAIChatNotFound(StudentAIWriteRejected):
+    """The conversation is absent or inaccessible to this user."""
+
+
 async def save_student_ai_exchange(
     user_id: str,
     chat_id: str,
@@ -990,7 +998,7 @@ async def save_student_ai_exchange(
     answer = answer.strip()
 
     if not question or not answer:
-        raise ValueError("Question and answer are required.")
+        raise StudentAIWriteRejected("Question and answer are required.")
 
     now = datetime.now(timezone.utc)
 
@@ -1018,13 +1026,13 @@ async def save_student_ai_exchange(
     ]
 
     # Verify ownership before writing with service-role access.
-    owned_chat = await get_student_ai_chat(
-        user_id=user_id,
-        chat_id=chat_id,
-    )
+    try:
+        owned_chat = await get_student_ai_chat(user_id=user_id, chat_id=chat_id)
+    except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+        raise StudentAIWriteRejected("Unable to verify conversation ownership.") from exc
 
     if not owned_chat:
-        raise ValueError("Conversation not found or access denied.")
+        raise StudentAIChatNotFound("Conversation not found or access denied.")
 
     async with create_supabase_client() as client:
         response = await client.post(
@@ -1034,9 +1042,15 @@ async def save_student_ai_exchange(
         )
 
         response.raise_for_status()
-        records = response.json()
-
-        if len(records) != 2:
+        try:
+            records = response.json()
+        except ValueError as exc:
+            raise RuntimeError("Unable to verify saved exchange.") from exc
+        if (
+            not isinstance(records, list)
+            or len(records) != 2
+            or any(not isinstance(record, dict) or not record.get("id") for record in records)
+        ):
             raise RuntimeError("Unable to verify saved exchange.")
 
         return records
@@ -1491,7 +1505,10 @@ async def reserve_student_ai_request(
         )
 
         response.raise_for_status()
-        records = response.json()
+        try:
+            records = response.json()
+        except ValueError as exc:
+            raise RuntimeError("Invalid AI reservation response.") from exc
 
         if not isinstance(records, list) or len(records) != 1:
             raise RuntimeError("Invalid AI reservation response.")
@@ -1527,7 +1544,10 @@ async def settle_student_ai_request(
         )
 
         response.raise_for_status()
-        records = response.json()
+        try:
+            records = response.json()
+        except ValueError as exc:
+            raise RuntimeError("Invalid AI settlement response.") from exc
 
         if not isinstance(records, list) or len(records) != 1:
             raise RuntimeError("Invalid AI settlement response.")

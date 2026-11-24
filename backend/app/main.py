@@ -39,9 +39,11 @@ from app.student_ai import (
 from app.document_context import chunk_document
 
 from app.database import (
-    reserve_student_ai_calls,
+    StudentAIChatNotFound,
+    StudentAIWriteRejected,
     get_student_ai_usage,
 )
+from app.student_ai_quota import StudentAIReservation
 
 from app.database import create_collaboration_with_quota
 from app.database import get_user_ai_usage
@@ -883,7 +885,8 @@ async def call_ai_with_fallback(
 
     # Ollama-only requests may fall back to authorized cloud providers.
     # Other model selections retain their existing provider order.
-    if provider_order == ("ollama",):
+    individual_ollama = provider_order == ("ollama",)
+    if individual_ollama:
         fallback_candidates = (
             "gemini", "groq", "openrouter"
         )
@@ -1033,7 +1036,7 @@ async def call_ai_with_fallback(
                 "status": "unavailable",
             })
 
-    if any(
+    if individual_ollama or any(
         item["status"] in ("retryable_error", "unavailable")
         for item in attempted
     ):
@@ -1154,6 +1157,10 @@ async def collaborate_ai_models(
     request: AIRequest,
     user: dict = Depends(verify_user),
 ):
+    task = request.task.strip()
+    if not task:
+        raise HTTPException(400, "Please enter a task.")
+
     if request.use_personal_keys and not request.accept_provider_charges:
         raise HTTPException(
             status_code=400,
@@ -1181,7 +1188,7 @@ async def collaborate_ai_models(
                 detail="Unable to retrieve personal API keys",
             ) from exc
 
-        if len(personal_keys) < 2:
+        if len(personal_keys) < 2 and request.selected_models != ["ollama"]:
             raise HTTPException(
                 status_code=400,
                 detail="Add at least two personal provider API keys in API Settings to start a multi-model collaboration.",
@@ -1212,7 +1219,7 @@ async def collaborate_ai_models(
         ):
             raise HTTPException(
                 status_code=400,
-                detail="Select 2-4 distinct approved AI providers.",
+                detail="Select 2-4 distinct approved AI providers, or use Ollama independently.",
             )
 
         if "ollama" in requested and os.getenv("ENABLE_LOCAL_OLLAMA", "false").lower() != "true":
@@ -1249,16 +1256,36 @@ async def collaborate_ai_models(
 
         selected_models = requested
 
-    max_rounds = 2
+    submission = (user["sub"], task, tuple(selected_models), request.use_personal_keys)
+    if submission in active_collaboration_submissions:
+        raise HTTPException(409, "This task is already being submitted.")
+
+    active_collaboration_submissions.add(submission)
+    try:
+        return await create_and_run_collaboration(
+            user_id=user["sub"], task=task,
+            selected_models=selected_models, personal_keys=personal_keys,
+        )
+    finally:
+        active_collaboration_submissions.discard(submission)
+
+
+active_collaboration_submissions: set[tuple[str, str, tuple[str, ...], bool]] = set()
+
+
+async def create_and_run_collaboration(
+    *, user_id: str, task: str, selected_models: list[str], personal_keys: dict[str, str] | None,
+) -> dict:
+    max_rounds = 1 if selected_models == ["ollama"] else 2
 
     try:
         reservation = await create_collaboration_with_quota(
-            user_id=user["sub"],
-            task=request.task,
+            user_id=user_id,
+            task=task,
             selected_models=selected_models,
             max_rounds=max_rounds,
             credential_mode=(
-                "personal" if request.use_personal_keys
+                "personal" if personal_keys is not None
                 else "platform"
             ),
             daily_limit=10,
@@ -1290,13 +1317,16 @@ async def collaborate_ai_models(
 
         result = await run_claimed_collaboration(
             task_id=task_id,
-            task=request.task,
+            task=task,
             model_ids=selected_models,
             ai_caller=ai_caller,
             max_rounds=max_rounds,
+            recovery_user_id=user_id if personal_keys is None else None,
         )
 
         result["task_id"] = str(task_id)
+        result["selected_models"] = selected_models
+        result["max_rounds"] = max_rounds
         result["requests_remaining"] = reservation["requests_remaining"]
 
         return result
@@ -1479,18 +1509,20 @@ async def remove_personal_api_key(
 async def resume_saved_collaboration(saved_task: dict) -> dict:
     """Resume an eligible platform collaboration."""
 
+    task_id = UUID(str(saved_task["id"]))
+    user_id = str(UUID(str(saved_task["user_id"])))
+    task = await get_user_collaboration_task(user_id=user_id, task_id=str(task_id))
     if (
-        saved_task.get("credential_mode") != "platform"
-        or saved_task.get("auto_resume_enabled") is not True
+        task is None
+        or task.get("credential_mode") != "platform"
+        or task.get("auto_resume_enabled") is not True
     ):
         raise ValueError(
             "Only authorized platform collaborations may auto-resume."
         )
 
-    selected_models = saved_task["selected_models"]
-
-
-    task_id = UUID(str(saved_task["id"]))
+    if task.get("status") not in ("pending", "paused"):
+        return {"task_id": str(task_id), "status": task["status"]}
 
     async with httpx.AsyncClient(timeout=120) as client:
 
@@ -1505,10 +1537,11 @@ async def resume_saved_collaboration(saved_task: dict) -> dict:
 
         return await run_claimed_collaboration(
             task_id=task_id,
-            task=saved_task["task"],
-            model_ids=saved_task["selected_models"],
+            task=task["task"],
+            model_ids=task["selected_models"],
             ai_caller=ai_caller,
-            max_rounds=saved_task["max_rounds"],
+            max_rounds=task["max_rounds"],
+            recovery_user_id=user_id,
         )
 
 
@@ -1762,6 +1795,7 @@ class StudentTutorMessageRequest(BaseModel):
     use_personal_keys: bool = False
     accept_provider_charges: bool = False
     accept_ai_processing: bool = False
+    request_id: UUID | None = None
 
 
 async def get_tutor_subject(
@@ -2047,27 +2081,9 @@ async def send_tutor_message(
             document_text = document["text"]
             document_title = document["title"]
 
-        # Reserve one logical Student AI call.
-
-        quota = await reserve_student_ai_request(
-            user_id=user_id,
-            request_id=str(uuid4()),
-            requested_calls=1,
-        )
-
-        if not quota["allowed"]:
-            raise HTTPException(
-                status_code=429,
-                detail=(
-                    "Daily Student AI allowance exhausted. "
-                    "Please try again after the quota resets."
-                ),
-            )
-
-        # Generate response using provider fallback.
-
-        reservation_id = quota["reservation_id"]
-        try:
+        async with StudentAIReservation(
+            user_id, f"tutor:{chat_id}", request.request_id
+        ) as reservation:
             async with httpx.AsyncClient(
                 timeout=60.0,
             ) as client:
@@ -2096,40 +2112,19 @@ async def send_tutor_message(
                     document_text=document_text,
                     document_title=document_title,
                 )
-        except BaseException:
             try:
-                await settle_student_ai_request(
-                    reservation_id=reservation_id,
-                    calls_charged=0,
+                saved_messages = await reservation.persist(
+                    save_student_ai_exchange(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        question=question,
+                        answer=result["answer"],
+                        provider=result.get("provider"),
+                        model_id=result.get("model"),
+                    )
                 )
-            except Exception:
-                import logging
-                logging.getLogger(__name__).exception(
-                    "AI Tutor quota refund failed"
-                )
-            raise
-
-        settlement = await settle_student_ai_request(
-            reservation_id=reservation_id,
-            calls_charged=1,
-        )
-
-        # Persist question and answer together.
-
-        try:
-            saved_messages = await save_student_ai_exchange(
-                user_id=user_id,
-                chat_id=chat_id,
-                question=question,
-                answer=result["answer"],
-                provider=result.get("provider"),
-                model_id=result.get("model"),
-            )
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=404,
-                detail="Conversation not found.",
-            ) from exc
+            except StudentAIChatNotFound as exc:
+                raise HTTPException(404, "Conversation not found.") from exc
 
         # Automatically name the first conversation.
 
@@ -2158,8 +2153,8 @@ async def send_tutor_message(
             "chat_id": chat_id,
             "chat": updated_chat or chat,
             "messages": saved_messages,
-            "calls_remaining": settlement["calls_remaining"],
-            "daily_limit": quota["daily_limit"],
+            "calls_remaining": reservation.quota["calls_remaining"],
+            "daily_limit": reservation.quota["daily_limit"],
         }
 
     except StudentTutorError as exc:
@@ -2171,7 +2166,7 @@ async def send_tutor_message(
     except HTTPException:
         raise
 
-    except (httpx.HTTPError, RuntimeError) as exc:
+    except (httpx.HTTPError, RuntimeError, StudentAIWriteRejected) as exc:
         raise HTTPException(
             status_code=503,
             detail=(
