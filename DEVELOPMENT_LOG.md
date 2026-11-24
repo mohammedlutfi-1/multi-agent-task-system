@@ -1,5 +1,12 @@
 # Development log
 
+## 2026-11-24 — Final documentation and handover
+
+- Recorded the owner-confirmed deployment of `e4391a1` through PR #5 on Vercel and Render. The local Git cache now contains that merge. Its tracked tree matches the final release branch at `6b7bd6e`.
+- Consolidated implemented features, architecture, provider routing, quota, worker operation, deployment, and rollback guidance in README.md. PROJECT_STATUS.md records validation and limitations. TASKS.md tracks only outstanding closure and deferred work.
+- Academic Assistant production verification remains pending after provider HTTP 429 and 503 responses. Earlier mocked checks and other workflows do not establish a successful production Academic Assistant run.
+- Documentation only. No application code, migration, configuration, credential, or deployment changes. No live AI requests or new runtime tests.
+
 ## 2026-11-24 — Step 284
 
 - Started FastAPI on loopback with dotenv loading disabled, mocked inference and external database access blocked. Started the isolated Step 283 Next.js production build with placeholder public configuration. Local HTTP smoke passed three public HTML pages, nine protected page redirects, backend health, and five protected API checks.
