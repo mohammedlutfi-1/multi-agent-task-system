@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -18,11 +18,16 @@ type Result = {
   task_id?: string;
   requests_remaining?: number;
   retry_status?: string;
+  selected_models?: string[];
+  max_rounds?: number;
 };
 type HistoryTask = { id: string; task: string; status: string; created_at: string; final_answer: string | null };
 type SavedTurn = { turn_number: number; round_number: number; requested_provider: string; actual_provider: string; model_id: string; response: string };
 const API = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
 const names: Record<string,string> = {gemini:"Gemini 3.5 Flash-Lite",groq:"Groq GPT-OSS 20B",openrouter:"OpenRouter",ollama:"Ollama Qwen 2.5 1.5B"};
+function isIndividualOllama(models?: string[]) {
+  return models?.length === 1 && models[0] === "ollama";
+}
 async function request(path:string, init:RequestInit = {}) {
   const {data:{session},error} = await createClient().auth.getSession();
   if(error || !session?.access_token) throw new Error("Please sign in again.");
@@ -46,6 +51,7 @@ export default function CollaborationPage(){
   const [result,setResult]=useState<Result|null>(null);
   const [history,setHistory]=useState<HistoryTask[]>([]);
   const [loading,setLoading]=useState(false);
+  const submitting = useRef(false);
   const [historyLoading,setHistoryLoading]=useState(false);
   const [opening,setOpening]=useState<string|null>(null);
   const [active,setActive]=useState<string|null>(null);
@@ -57,6 +63,9 @@ export default function CollaborationPage(){
     const selectedProviders = usePersonalKeys
     ? personalProviders
     : cloudSelection;
+  const individual = isIndividualOllama(selectedProviders);
+  const validSelection = individual || (selectedProviders.length >= 2 && selectedProviders.length <= 4);
+  const individualResult = result?.max_rounds === 1 && isIndividualOllama(result.selected_models);
 
   const personalModeBlocked =
     usePersonalKeys &&
@@ -161,6 +170,8 @@ export default function CollaborationPage(){
         status: data.task.status,
         task: data.task.task,
         task_id: active!,
+        selected_models: data.task.selected_models,
+        max_rounds: data.task.max_rounds,
         total_turns: turns.length,
 
         discussion: turns.map(t => ({
@@ -227,6 +238,8 @@ export default function CollaborationPage(){
       status: data.task.status,
       task: data.task.task,
       task_id: id,
+      selected_models: data.task.selected_models,
+      max_rounds: data.task.max_rounds,
       total_turns: turns.length,
 
       discussion: turns.map(t => ({
@@ -258,9 +271,9 @@ export default function CollaborationPage(){
   }
 }
   async function generate(){
-        if (busy || !task.trim()) return;
-    if (selectedProviders.length < 2 || selectedProviders.length > 4) {
-      setError("Select between 2 and 4 AI models.");
+    if (submitting.current || busy || !task.trim()) return;
+    if (!validSelection) {
+      setError("Choose at least two models for collaboration, or use Ollama independently.");
       return;
     }
 
@@ -269,6 +282,7 @@ export default function CollaborationPage(){
       return;
     }
 
+    submitting.current = true;
     setLoading(true);
     setError("");
     setResult(null);
@@ -284,18 +298,20 @@ export default function CollaborationPage(){
             usePersonalKeys && acceptProviderCharges,
         }),
       });
-      if (data.status === "paused") {
+      if (["paused", "running", "pending"].includes(data.status)) {
   if (!data.task_id) {
     throw new Error("Missing saved collaboration ID.");
   }
 
   setResult({
-    status: "paused",
+    status: data.status,
     task: task.trim(),
     task_id: data.task_id,
-    total_turns: 0,
-    discussion: [],
-    model_usage: [],
+    selected_models: data.selected_models ?? selectedProviders,
+    max_rounds: data.max_rounds ?? (individual ? 1 : 2),
+    total_turns: data.total_turns ?? 0,
+    discussion: data.discussion ?? [],
+    model_usage: data.model_usage ?? [],
   });
 
   setActive(data.task_id);
@@ -314,9 +330,10 @@ if (
 ) {
   throw new Error("Incomplete collaboration response.");
 }
-      setResult(data);setActive(data.task_id??null);if(typeof data.requests_remaining==="number")setRemaining(data.requests_remaining);
+      setResult({...data, selected_models: data.selected_models ?? selectedProviders, max_rounds: data.max_rounds ?? (individual ? 1 : 2)});setActive(data.task_id??null);if(typeof data.requests_remaining==="number")setRemaining(data.requests_remaining);
     }catch(e){setError(e instanceof Error?e.message:"Collaboration failed.");}finally {
   await Promise.all([loadHistory(), loadUsage()]);
+  submitting.current = false;
   setLoading(false);
 }
   }
@@ -443,13 +460,11 @@ if (
         </section>
 
 <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-  <label htmlFor="task" className="sr-only">Your task</label><textarea id="task" rows={4} maxLength={5000} disabled={busy} value={task} onChange={e=>setTask(e.target.value)} placeholder="Ask a question, solve a problem, or plan a project…" className="w-full resize-y rounded-xl p-3 text-base outline-none focus:ring-2 focus:ring-indigo-100"/><div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-4"><span className="rounded-md bg-slate-100 px-3 py-2 text-xs">{selectedProviders.length} AI models</span><span className="rounded-md bg-slate-100 px-3 py-2 text-xs">2 rounds</span><button onClick={()=>void generate()} disabled={busy || !task.trim() || personalModeBlocked} className="ml-auto rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">{loading?"Collaborating…":"Collaborate →"}</button></div>{loading&&<p role="status" className="mt-3 text-sm text-indigo-600">Running AI discussion and final synthesis…</p>}{error&&<p role="alert" className="mt-3 text-sm text-red-600">{error}</p>}</section>
+  <label htmlFor="task" className="sr-only">Your task</label><textarea id="task" rows={4} maxLength={5000} disabled={busy} value={task} onChange={e=>setTask(e.target.value)} placeholder="Ask a question, solve a problem, or plan a project…" className="w-full resize-y rounded-xl p-3 text-base outline-none focus:ring-2 focus:ring-indigo-100"/><div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-4"><span className="rounded-md bg-slate-100 px-3 py-2 text-xs">{selectedProviders.length} AI models</span>{!individual && <span className="rounded-md bg-slate-100 px-3 py-2 text-xs">2 rounds</span>}<button onClick={()=>void generate()} disabled={busy || !task.trim() || !validSelection || personalModeBlocked} className="ml-auto rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">{individual ? "Generate Answer" : "Start Collaboration"}</button></div>{individual && <p className="mt-3 text-sm text-slate-500">Ollama will respond independently.</p>}{loading&&<p role="status" className="mt-3 text-sm text-indigo-600">{individual ? "Generating an answer…" : "Running AI discussion and final synthesis…"}</p>}{error&&<p role="alert" className="mt-3 text-sm text-red-600">{error}</p>}</section>
         <section id="ai-models">
           <h3 className="mb-3 font-semibold">Your AI team</h3>
           <p className="mb-3 text-sm text-slate-500">
-            {usePersonalKeys
-              ? "Your configured personal API providers."
-              : "Choose at least two models for collaboration."}
+            Choose at least two models for collaboration, or use Ollama independently.
           </p>
           <div className="grid gap-3 sm:grid-cols-2">
             {(usePersonalKeys ? personalProviders : availableCloudModels).map(p => {
@@ -472,6 +487,7 @@ if (
                   />
                   <div>
                     <h4 className="font-semibold">{names[p]}</h4>
+                    {p === "ollama" && <p className="text-xs text-slate-500">Individual &amp; Collaboration</p>}
                     <p className="text-xs text-slate-500">
                       {selected ? "Selected participant" : "Available model"}
                     </p>
@@ -544,7 +560,7 @@ if (
     </p>
   </section>
 )}
-        {result&&<><section className="space-y-4"><div className="flex flex-wrap justify-between gap-2"><h3 className="text-xl font-bold">Collaboration discussion</h3><span className="text-sm capitalize text-slate-500">{result.total_turns} saved or completed turns · {result.status}</span></div>{result.discussion.map((t,i)=>{const u=result.model_usage.find(m=>m.turn===t.turn);return <article key={`${t.turn}-${i}`} className="rounded-2xl border border-slate-200 bg-white p-5"><div className="flex flex-wrap justify-between gap-2"><h4 className="font-semibold text-indigo-700">{names[u?.provider??t.model]??u?.provider??t.model}</h4><span className="text-xs text-slate-500">Turn {t.turn} · Round {t.round}</span></div><p className="mt-2 break-words text-xs text-slate-500">Requested: {t.model} · Actual model: {u?.model??"Not reported"}</p>{u&&u.provider!==u.requested_provider&&<p className="text-xs text-amber-700">Fallback provider used</p>}<div className="markdown-content mt-4 break-words text-sm"><ReactMarkdown remarkPlugins={[remarkGfm]}>{t.response}</ReactMarkdown></div></article>;})}</section><section className="rounded-2xl border border-indigo-200 bg-white p-6"><h3 className="text-xl font-bold">Final collaborative answer</h3><div className="markdown-content mt-4 break-words">{result.final_answer?<ReactMarkdown remarkPlugins={[remarkGfm]}>{result.final_answer}</ReactMarkdown>:<p className="text-slate-500">No final synthesis saved yet.</p>}</div></section></>}
+        {result&&<><section className="space-y-4"><div className="flex flex-wrap justify-between gap-2"><h3 className="text-xl font-bold">{individualResult ? "AI response" : "Collaboration discussion"}</h3><span className="text-sm capitalize text-slate-500">{!individualResult && `${result.total_turns} saved or completed turns · `}{result.status}</span></div>{result.discussion.map((t,i)=>{const u=result.model_usage.find(m=>m.turn===t.turn);return <article key={`${t.turn}-${i}`} className="rounded-2xl border border-slate-200 bg-white p-5"><div className="flex flex-wrap justify-between gap-2"><h4 className="font-semibold text-indigo-700">{names[u?.provider??t.model]??u?.provider??t.model}</h4>{!individualResult && <span className="text-xs text-slate-500">Turn {t.turn} · Round {t.round}</span>}</div><p className="mt-2 break-words text-xs text-slate-500">Requested: {t.model} · Actual model: {u?.model??"Not reported"}</p>{u&&u.provider!==u.requested_provider&&<p className="text-xs text-amber-700">Fallback provider used</p>}<div className="markdown-content mt-4 break-words text-sm"><ReactMarkdown remarkPlugins={[remarkGfm]}>{t.response}</ReactMarkdown></div></article>;})}{individualResult && !result.discussion.length && result.final_answer && <div className="markdown-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{result.final_answer}</ReactMarkdown></div>}</section>{!individualResult && <section className="rounded-2xl border border-indigo-200 bg-white p-6"><h3 className="text-xl font-bold">Final collaborative answer</h3><div className="markdown-content mt-4 break-words">{result.final_answer?<ReactMarkdown remarkPlugins={[remarkGfm]}>{result.final_answer}</ReactMarkdown>:<p className="text-slate-500">No final synthesis saved yet.</p>}</div></section>}</>}
         <section id="usage" className="rounded-xl border border-slate-200 bg-white p-4"><h3 className="text-sm font-semibold">Daily usage &amp; limits</h3><p className="mt-2 text-sm text-slate-500">{remaining===null?"Daily limit: 10 requests. Current balance not loaded.":`${remaining} of 10 requests remaining (last reported balance).`} Reset at midnight UTC.</p></section>
       </div>
     </main>

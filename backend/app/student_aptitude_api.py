@@ -9,9 +9,9 @@ from pydantic import BaseModel, Field
 
 from app.database import (
     create_supabase_client,
-    reserve_student_ai_calls,
     get_user_provider_key,
 )
+from app.student_ai_quota import StudentAIReservation
 from app.student_aptitude import (
     APTITUDE_TOPICS,
     DIFFICULTIES,
@@ -32,10 +32,28 @@ class AptitudeGenerateRequest(BaseModel):
     accept_ai_processing: bool = False
     use_personal_keys: bool = False
     accept_provider_charges: bool = False
+    request_id: UUID | None = None
 
 
 class AptitudeSubmitRequest(BaseModel):
     submitted_answers: dict[str, str] = Field(default_factory=dict)
+
+
+async def save_generated_aptitude_test(payload: dict) -> str:
+    async with create_supabase_client() as db:
+        response = await db.post(
+            "student_aptitude_tests",
+            json=payload,
+            headers={"Prefer": "return=representation"},
+        )
+        response.raise_for_status()
+        try:
+            rows = response.json()
+            if not isinstance(rows, list) or len(rows) != 1:
+                raise ValueError("Expected one saved test.")
+            return str(UUID(rows[0]["id"]))
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise RuntimeError("Unable to verify saved aptitude test.") from exc
 
 
 def make_aptitude_router(verify_user, call_ai_with_fallback):
@@ -141,83 +159,61 @@ def make_aptitude_router(verify_user, call_ai_with_fallback):
                 503, "No AI provider is configured."
             )
 
-        quota = await reserve_student_ai_calls(user_id, 1)
-
-        if not quota.get("allowed"):
-            raise HTTPException(
-                429, "Daily student AI quota reached."
-            )
-
-        stage = 'AI_GENERATION'
+        stage = "RESERVATION"
         try:
-            async with httpx.AsyncClient(timeout=90.0) as client:
+            async with StudentAIReservation(
+                user_id, "aptitude", request.request_id
+            ) as reservation:
+                stage = "AI_GENERATION"
+                async with httpx.AsyncClient(timeout=90.0) as client:
 
-                async def ai_caller(messages, max_tokens):
-                    return await call_ai_with_fallback(
-                        client=client,
-                        messages=messages,
-                        max_tokens=max_tokens,
-                        provider_order=(
-                            "groq", "gemini", "openrouter"
-                        ),
-                        personal_keys=(
-                            personal_keys
-                            if request.use_personal_keys
-                            else None
-                        ),
+                    async def ai_caller(messages, max_tokens):
+                        return await call_ai_with_fallback(
+                            client=client,
+                            messages=messages,
+                            max_tokens=max_tokens,
+                            provider_order=("groq", "gemini", "openrouter"),
+                            personal_keys=personal_keys if request.use_personal_keys else None,
+                        )
+
+                    generated = await generate_aptitude_questions(
+                        category=request.category,
+                        topic=request.topic,
+                        difficulty=request.difficulty,
+                        question_count=request.question_count,
+                        ai_caller=ai_caller,
                     )
 
-                generated = await generate_aptitude_questions(
-                    category=request.category,
-                    topic=request.topic,
-                    difficulty=request.difficulty,
-                    question_count=request.question_count,
-                    ai_caller=ai_caller,
-                )
-
-            now = datetime.now(timezone.utc)
-            expires = now + timedelta(
-                seconds=generated["duration_seconds"]
-            )
-
-            stage = 'DATABASE_INSERT'
-            async with create_supabase_client() as db:
-                response = await db.post(
-                    "student_aptitude_tests",
-                    json={
+                duration = generated["duration_seconds"]
+                expires = datetime.now(timezone.utc) + timedelta(seconds=duration)
+                questions = public_questions(generated["questions"])
+                stage = "DATABASE_INSERT"
+                test_id = await reservation.persist(
+                    save_generated_aptitude_test({
                         "user_id": user_id,
                         "category": request.category,
                         "topic": request.topic,
                         "difficulty": request.difficulty,
-                        "duration_seconds": generated[
-                            "duration_seconds"
-                        ],
+                        "duration_seconds": duration,
                         "expires_at": expires.isoformat(),
                         "questions": generated["questions"],
-                    },
-                    headers={"Prefer": "return=representation"},
+                    })
                 )
-                response.raise_for_status()
-                rows = response.json()
-
-            if not rows:
-                raise RuntimeError("Test was not saved.")
 
             return {
-                "test_id": rows[0]["id"],
+                "test_id": test_id,
                 "category": request.category,
                 "topic": request.topic,
                 "difficulty": request.difficulty,
-                "duration_seconds": generated[
-                    "duration_seconds"
-                ],
+                "duration_seconds": duration,
                 "expires_at": expires.isoformat(),
-                "questions": public_questions(
-                    generated["questions"]
-                ),
+                "questions": questions,
                 "provider": generated.get("provider"),
                 "model": generated.get("model"),
-                "quota": quota,
+                "quota": {
+                    field: reservation.quota[field]
+                    for field in ("allowed", "calls_used", "calls_remaining", "daily_limit")
+                },
             }
 
         except MockTestError as exc:
